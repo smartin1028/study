@@ -1,0 +1,166 @@
+# PowerShell 배포 자동화 스크립트
+
+아래는 Maven 빌드, 파일 백업, 배포, 실행 로그 확인을 포함한 종합적인 배포 자동화 PowerShell 스크립트입니다.
+
+```powershell
+<#
+.SYNOPSIS
+    애플리케이션 배포 자동화 스크립트
+.DESCRIPTION
+    1. Maven으로 프로젝트 빌드
+    2. 기존 배포 파일 백업
+    3. 새 빌드 파일 배포
+    4. 실행 로그 확인 및 성공 여부 검증
+#>
+
+# 0. 초기 설정
+$ErrorActionPreference = "Stop"
+$startTime = Get-Date
+$deployLog = "$PSScriptRoot\deploy_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+
+# 로그 함수
+function Write-Log {
+    param (
+        [string]$message,
+        [string]$level = "INFO"
+    )
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] [$level] $message"
+    Write-Host $logEntry
+    Add-Content -Path $deployLog -Value $logEntry
+}
+
+try {
+    # 1. Maven 빌드 실행
+    Write-Log "1. Maven 빌드 시작..."
+    
+    $mvnPath = "mvn"  # 또는 "C:\path\to\maven\bin\mvn.cmd"
+    $pomPath = "$PSScriptRoot\pom.xml"  # pom.xml 경로
+    
+    if (-not (Test-Path $pomPath)) {
+        throw "pom.xml 파일을 찾을 수 없습니다: $pomPath"
+    }
+    
+    # Maven clean install 실행
+    & $mvnPath -f $pomPath clean install
+    
+    if ($LASTEXITCODE -ne 0) {
+        throw "Maven 빌드 실패 (종료 코드: $LASTEXITCODE)"
+    }
+    
+    Write-Log "Maven 빌드 성공"
+    
+    # 2. 파일 백업
+    Write-Log "2. 기존 배포 파일 백업..."
+    
+    $backupDir = "$PSScriptRoot\backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $deployTargetDir = "C:\deploy\target"  # 실제 배포 대상 디렉토리로 변경 필요
+    
+    if (Test-Path $deployTargetDir) {
+        New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+        
+        # 배포 디렉토리 전체 백업
+        Copy-Item -Path "$deployTargetDir\*" -Destination $backupDir -Recurse -Force
+        
+        Write-Log "백업 완료: $backupDir"
+    } else {
+        Write-Log "백업 대상 디렉토리가 존재하지 않아 백업을 건너뜁니다: $deployTargetDir"
+    }
+    
+    # 3. 파일 복사/배포
+    Write-Log "3. 새 빌드 파일 배포..."
+    
+    $buildOutputDir = "$PSScriptRoot\target"  # Maven 빌드 출력 디렉토리
+    
+    if (-not (Test-Path $buildOutputDir)) {
+        throw "빌드 출력 디렉토리를 찾을 수 없습니다: $buildOutputDir"
+    }
+    
+    # 배포 디렉토리 생성 (없을 경우)
+    New-Item -ItemType Directory -Path $deployTargetDir -Force | Out-Null
+    
+    # 새 빌드 파일 복사
+    Copy-Item -Path "$buildOutputDir\*" -Destination $deployTargetDir -Recurse -Force
+    
+    Write-Log "배포 완료: $deployTargetDir"
+    
+    # 4. 실행 로그 확인
+    Write-Log "4. 애플리케이션 실행 및 로그 확인..."
+    
+    $appProcess = Start-Process -FilePath "java" -ArgumentList "-jar $deployTargetDir\your-application.jar" -PassThru -NoNewWindow
+    $logFile = "$deployTargetDir\logs\application.log"  # 애플리케이션 로그 파일 경로
+    
+    # 로그 파일이 생성될 때까지 대기
+    $maxWaitTime = 60  # 최대 60초 대기
+    $waitTime = 0
+    
+    while (-not (Test-Path $logFile) -and $waitTime -lt $maxWaitTime) {
+        Start-Sleep -Seconds 5
+        $waitTime += 5
+        Write-Log "로그 파일 대기 중... ($waitTime/$maxWaitTime 초)"
+    }
+    
+    if (-not (Test-Path $logFile)) {
+        throw "로그 파일이 생성되지 않았습니다: $logFile"
+    }
+    
+    # 로그에서 성공 메시지 확인 (실제 애플리케이션의 성공 메시지로 변경 필요)
+    $successPattern = "Started Application in"
+    $logContent = Get-Content $logFile -Tail 20 -Wait  # 마지막 20줄 확인
+    
+    if ($logContent -match $successPattern) {
+        Write-Log "애플리케이션 시작 성공 확인: 로그에서 '$successPattern' 패턴 발견"
+    } else {
+        throw "애플리케이션 시작 실패: 로그에서 성공 패턴을 찾을 수 없음"
+    }
+    
+    # 정상 종료
+    $endTime = Get-Date
+    $duration = $endTime - $startTime
+    Write-Log "배포 자동화 완료! 총 소요 시간: $($duration.TotalSeconds) 초"
+    exit 0
+    
+} catch {
+    Write-Log "배포 중 오류 발생: $_" -level "ERROR"
+    Write-Log "스택 추적: $($_.ScriptStackTrace)" -level "ERROR"
+    exit 1
+}
+```
+
+## 사용 방법
+
+1. 위 스크립트를 `deploy.ps1` 파일로 저장합니다.
+2. 다음 변수들을 실제 환경에 맞게 수정합니다:
+   - `$deployTargetDir`: 실제 배포 대상 디렉토리
+   - `$appProcess` 시작 부분: 실제 애플리케이션 실행 명령어
+   - `$successPattern`: 애플리케이션 로그에서 성공을 확인할 패턴
+
+3. 스크립트 실행:
+```powershell
+.\deploy.ps1
+```
+
+## 주요 기능 설명
+
+1. **Maven 빌드**:
+   - `mvn clean install` 실행
+   - 빌드 실패 시 자동 중단
+
+2. **파일 백업**:
+   - 기존 배포 디렉토리 전체를 타임스탬프가 포함된 백업 폴더로 복사
+   - 백업 실패 시 경고만 출력하고 계속 진행
+
+3. **파일 배포**:
+   - Maven 빌드 결과물(`target/`)을 배포 디렉토리로 복사
+   - 배포 디렉토리가 없으면 자동 생성
+
+4. **실행 로그 확인**:
+   - 애플리케이션 실행 후 로그 파일 생성 대기
+   - 로그 파일에서 성공 패턴 검색
+   - 성공 패턴이 없으면 배포 실패로 처리
+
+5. **로깅**:
+   - 모든 작업 단계를 콘솔과 로그 파일에 기록
+   - 오류 발생 시 상세한 스택 추적 기록
+
+이 스크립트는 기본적인 배포 시나리오를 커버하며, 실제 환경에 맞게 추가로 커스터마이징이 필요할 수 있습니다.
